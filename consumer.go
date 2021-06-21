@@ -206,7 +206,7 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 					return nil
 				case err = <-processingError:
 					wg.Wait()
-					return nil
+					return err
 				default:
 					wg.Add(1)
 					done <- 1
