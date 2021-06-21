@@ -18,8 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/kinesis"
-	consumer "github.com/harlow/kinesis-consumer"
-	storage "github.com/harlow/kinesis-consumer/store/ddb"
+	consumer "github.com/eniolopes/kinesis-consumer"
+	storage "github.com/eniolopes/kinesis-consumer/store/ddb"
 )
 
 // kick off a server for exposing scan metrics

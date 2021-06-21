@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
-	consumer "github.com/harlow/kinesis-consumer"
-	store "github.com/harlow/kinesis-consumer/store/postgres"
+	consumer "github.com/eniolopes/kinesis-consumer"
+	store "github.com/eniolopes/kinesis-consumer/store/postgres"
 )
 
 func main() {

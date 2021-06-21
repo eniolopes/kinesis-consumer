@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
-	consumer "github.com/harlow/kinesis-consumer"
-	store "github.com/harlow/kinesis-consumer/store/redis"
+	consumer "github.com/eniolopes/kinesis-consumer"
+	store "github.com/eniolopes/kinesis-consumer/store/redis"
 )
 
 // A myLogger provides a minimalistic logger satisfying the Logger interface.

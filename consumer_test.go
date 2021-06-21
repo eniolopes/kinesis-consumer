@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/aws/aws-sdk-go/service/kinesis/kinesisiface"
 
-	store "github.com/harlow/kinesis-consumer/store/memory"
+	store "github.com/eniolopes/kinesis-consumer/store/memory"
 )
 
 var records = []*kinesis.Record{
