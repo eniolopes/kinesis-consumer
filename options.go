@@ -79,3 +79,11 @@ func WithAggregation(a bool) Option {
 		c.isAggregated = a
 	}
 }
+
+// WithRecordProcessingConcurrency overrides the number of goroutines
+// running concurrently to process each record
+func WithRecordProcessingConcurrency(concurrency int64) Option {
+	return func(c *Consumer) {
+		c.recordProcessingConcurrency = concurrency
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
+	"sort"
 	"sync"
 	"time"
 
@@ -41,8 +43,9 @@ func New(streamName string, opts ...Option) (*Consumer, error) {
 		logger: &noopLogger{
 			logger: log.New(ioutil.Discard, "", log.LstdFlags),
 		},
-		scanInterval: 250 * time.Millisecond,
-		maxRecords:   10000,
+		scanInterval:                250 * time.Millisecond,
+		maxRecords:                  10000,
+		recordProcessingConcurrency: 1,
 	}
 
 	// override defaults
@@ -69,17 +72,18 @@ func New(streamName string, opts ...Option) (*Consumer, error) {
 
 // Consumer wraps the interaction with the Kinesis stream
 type Consumer struct {
-	streamName               string
-	initialShardIteratorType string
-	initialTimestamp         *time.Time
-	client                   kinesisiface.KinesisAPI
-	counter                  Counter
-	group                    Group
-	logger                   Logger
-	store                    Store
-	scanInterval             time.Duration
-	maxRecords               int64
-	isAggregated             bool
+	streamName                  string
+	initialShardIteratorType    string
+	initialTimestamp            *time.Time
+	client                      kinesisiface.KinesisAPI
+	counter                     Counter
+	group                       Group
+	logger                      Logger
+	store                       Store
+	scanInterval                time.Duration
+	maxRecords                  int64
+	isAggregated                bool
+	recordProcessingConcurrency int64
 }
 
 // ScanFunc is the type of the function called for each message read
@@ -192,27 +196,57 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 			} else {
 				records = resp.Records
 			}
+			var wg sync.WaitGroup
+			done := make(chan int, c.recordProcessingConcurrency)
+			processingError := make(chan error)
+			var successSequenceNumbers []big.Int
 			for _, r := range records {
 				select {
 				case <-ctx.Done():
 					return nil
+				case err = <-processingError:
+					wg.Wait()
+					return nil
 				default:
-					err := fn(&Record{r, shardID, resp.MillisBehindLatest})
-					if err != nil && err != ErrSkipCheckpoint {
-						return err
-					}
-
-					if err != ErrSkipCheckpoint {
-						if err := c.group.SetCheckpoint(c.streamName, shardID, *r.SequenceNumber); err != nil {
-							return err
+					wg.Add(1)
+					done <- 1
+					go func(r kinesis.Record, sharID string) {
+						defer func() {
+							wg.Done()
+							<-done
+						}()
+						err := fn(&Record{&r, shardID, resp.MillisBehindLatest})
+						if err != nil && err != ErrSkipCheckpoint {
+							processingError <- err
+							return
 						}
-					}
 
-					c.counter.Add("records", 1)
-					lastSeqNum = *r.SequenceNumber
+						if err != ErrSkipCheckpoint {
+							n := new(big.Int)
+							n, ok := n.SetString(*r.SequenceNumber, 10)
+							if !ok {
+								processingError <- errors.New(fmt.Sprintf("Failed to parse sequence number to bigint %s", *r.SequenceNumber))
+								return
+							}
+							successSequenceNumbers = append(successSequenceNumbers, *n)
+						}
+						c.counter.Add("records", 1)
+					}(*r, shardID)
 				}
 			}
+			wg.Wait()
 
+			if len(successSequenceNumbers) > 0 {
+				sort.SliceStable(successSequenceNumbers, func(i, j int) bool {
+					return successSequenceNumbers[i].Cmp(&successSequenceNumbers[j]) > 0
+				})
+				lastSeqNum = successSequenceNumbers[len(successSequenceNumbers)-1].String()
+				if err := c.group.SetCheckpoint(c.streamName, shardID, lastSeqNum); err != nil {
+					return err
+				}
+				successSequenceNumbers = []big.Int{}
+
+			}
 			if isShardClosed(resp.NextShardIterator, shardIterator) {
 				c.logger.Log("[CONSUMER] shard closed:", shardID)
 				return nil

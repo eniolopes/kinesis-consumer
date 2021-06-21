@@ -12,17 +12,17 @@ import (
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/aws/aws-sdk-go/service/kinesis/kinesisiface"
 
-	"github.com/harlow/kinesis-consumer/store/memory"
+	store "github.com/harlow/kinesis-consumer/store/memory"
 )
 
 var records = []*kinesis.Record{
 	{
 		Data:           []byte("firstData"),
-		SequenceNumber: aws.String("firstSeqNum"),
+		SequenceNumber: aws.String("1"),
 	},
 	{
 		Data:           []byte("lastData"),
-		SequenceNumber: aws.String("lastSeqNum"),
+		SequenceNumber: aws.String("2"),
 	},
 }
 
@@ -95,8 +95,8 @@ func TestScan(t *testing.T) {
 	}
 
 	val, err := cp.GetCheckpoint("myStreamName", "myShard")
-	if err != nil && val != "lastSeqNum" {
-		t.Errorf("checkout error expected %s, got %s", "lastSeqNum", val)
+	if err != nil && val != "2" {
+		t.Errorf("checkout error expected %s, got %s", "2", val)
 	}
 }
 
@@ -161,8 +161,8 @@ func TestScanShard(t *testing.T) {
 
 	// sets checkpoint
 	val, err := cp.GetCheckpoint("myStreamName", "myShard")
-	if err != nil && val != "lastSeqNum" {
-		t.Fatalf("checkout error expected %s, got %s", "lastSeqNum", val)
+	if err != nil && val != "2" {
+		t.Fatalf("checkout error expected %s, got %s", "2", val)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestScanShard_Cancellation(t *testing.T) {
 		t.Fatalf("scan shard error: %v", err)
 	}
 
-	if res != "firstData" {
-		t.Fatalf("callback error expected %s, got %s", "firstData", res)
+	if res != "firstDatalastData" {
+		t.Fatalf("callback error expected %s, got %s", "firstDatalastData", res)
 	}
 }
 
@@ -231,7 +231,7 @@ func TestScanShard_SkipCheckpoint(t *testing.T) {
 	var ctx, cancel = context.WithCancel(context.Background())
 
 	var fn = func(r *Record) error {
-		if aws.StringValue(r.SequenceNumber) == "lastSeqNum" {
+		if aws.StringValue(r.SequenceNumber) == "2" {
 			cancel()
 			return ErrSkipCheckpoint
 		}
@@ -245,8 +245,8 @@ func TestScanShard_SkipCheckpoint(t *testing.T) {
 	}
 
 	val, err := cp.GetCheckpoint("myStreamName", "myShard")
-	if err != nil && val != "firstSeqNum" {
-		t.Fatalf("checkout error expected %s, got %s", "firstSeqNum", val)
+	if err != nil && val != "1" {
+		t.Fatalf("checkout error expected %s, got %s", "1", val)
 	}
 }
 
