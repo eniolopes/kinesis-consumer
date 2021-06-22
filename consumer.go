@@ -257,14 +257,13 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 
 			if len(successSequenceNumbers) > 0 {
 				sort.SliceStable(successSequenceNumbers, func(i, j int) bool {
-					return successSequenceNumbers[i].Cmp(&successSequenceNumbers[j]) > 0
+					return successSequenceNumbers[i].Cmp(&successSequenceNumbers[j]) == 1
 				})
 				lastSeqNum = successSequenceNumbers[len(successSequenceNumbers)-1].String()
 				if err := c.group.SetCheckpoint(c.streamName, shardID, lastSeqNum); err != nil {
 					return err
 				}
 				successSequenceNumbers = []big.Int{}
-
 			}
 			if isShardClosed(resp.NextShardIterator, shardIterator) {
 				c.logger.Log("[CONSUMER] shard closed:", shardID)
