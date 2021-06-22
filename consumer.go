@@ -245,7 +245,15 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 					}(*r, shardID)
 				}
 			}
-			wg.Wait()
+			select {
+			case recordProcessingError := <-processingError:
+				if err := c.group.SetCheckpoint(c.streamName, shardID, recordProcessingError.SequenceNumber); err != nil {
+					return err
+				}
+				return recordProcessingError.Err
+			default:
+				wg.Wait()
+			}
 
 			if len(successSequenceNumbers) > 0 {
 				sort.SliceStable(successSequenceNumbers, func(i, j int) bool {
