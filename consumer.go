@@ -27,6 +27,11 @@ type Record struct {
 	MillisBehindLatest *int64
 }
 
+type RecordProcessingError struct {
+	Err            error
+	SequenceNumber string
+}
+
 // New creates a kinesis consumer with default settings. Use Option to override
 // any of the optional attributes.
 func New(streamName string, opts ...Option) (*Consumer, error) {
@@ -198,15 +203,18 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 			}
 			var wg sync.WaitGroup
 			done := make(chan int, c.recordProcessingConcurrency)
-			processingError := make(chan error)
+			processingError := make(chan RecordProcessingError)
 			var successSequenceNumbers []big.Int
 			for _, r := range records {
 				select {
 				case <-ctx.Done():
 					return nil
-				case err = <-processingError:
+				case recordProcessingError := <-processingError:
 					wg.Wait()
-					return err
+					if err := c.group.SetCheckpoint(c.streamName, shardID, recordProcessingError.SequenceNumber); err != nil {
+						return err
+					}
+					return recordProcessingError.Err
 				default:
 					wg.Add(1)
 					done <- 1
@@ -217,7 +225,7 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 						}()
 						err := fn(&Record{&r, shardID, resp.MillisBehindLatest})
 						if err != nil && err != ErrSkipCheckpoint {
-							processingError <- err
+							processingError <- RecordProcessingError{Err: err, SequenceNumber: *r.SequenceNumber}
 							return
 						}
 
@@ -225,7 +233,10 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 							n := new(big.Int)
 							n, ok := n.SetString(*r.SequenceNumber, 10)
 							if !ok {
-								processingError <- errors.New(fmt.Sprintf("Failed to parse sequence number to bigint %s", *r.SequenceNumber))
+								processingError <- RecordProcessingError{
+									Err:            errors.New(fmt.Sprintf("Failed to parse sequence number to bigint %s", *r.SequenceNumber)),
+									SequenceNumber: *r.SequenceNumber,
+								}
 								return
 							}
 							successSequenceNumbers = append(successSequenceNumbers, *n)
