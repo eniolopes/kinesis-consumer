@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -311,6 +312,154 @@ func TestScanShard_GetRecordsError(t *testing.T) {
 	err = c.ScanShard(context.Background(), "myShard", fn)
 	if err.Error() != "get records error: aws error message" {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+var concurrencyRecords = []*kinesis.Record{
+	{
+		Data:           []byte("firstData"),
+		SequenceNumber: aws.String("1"),
+	},
+	{
+		Data:           []byte("secondData"),
+		SequenceNumber: aws.String("2"),
+	},
+	{
+		Data:           []byte("thirdData"),
+		SequenceNumber: aws.String("3"),
+	},
+	{
+		Data:           []byte("lastData"),
+		SequenceNumber: aws.String("4"),
+	},
+}
+
+func TestScanShard_RecordProcessingConcurrency(t *testing.T) {
+	var client = &kinesisClientMock{
+		getShardIteratorMock: func(input *kinesis.GetShardIteratorInput) (*kinesis.GetShardIteratorOutput, error) {
+			return &kinesis.GetShardIteratorOutput{
+				ShardIterator: aws.String("49578481031144599192696750682534686652010819674221576194"),
+			}, nil
+		},
+		getRecordsMock: func(input *kinesis.GetRecordsInput) (*kinesis.GetRecordsOutput, error) {
+			return &kinesis.GetRecordsOutput{
+				NextShardIterator: nil,
+				Records:           concurrencyRecords,
+			}, nil
+		},
+	}
+
+	cp := store.New()
+	c, err := New("myStreamName", WithClient(client), WithRecordProcessingConcurrency(4), WithStore(cp))
+	if err != nil {
+		t.Fatalf("new consumer error: %v", err)
+	}
+
+	processed := []Record{}
+	mu := &sync.Mutex{}
+	var fn = func(r *Record) error {
+		mu.Lock()
+		processed = append(processed, *r)
+		mu.Unlock()
+		return nil
+	}
+
+	err = c.ScanShard(context.Background(), "myShard", fn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(processed) != 4 {
+		t.Fatalf("should have processed 4 records, number of processed records: %v", len(processed))
+	}
+	val, err := cp.GetCheckpoint("myStreamName", "myShard")
+	if err != nil || val != "4" {
+		t.Fatalf("expected checkpoint to be 4, got %s", val)
+	}
+}
+
+func TestScanShard_RecordProcessingConcurrencySkipCheckpoint(t *testing.T) {
+	var client = &kinesisClientMock{
+		getShardIteratorMock: func(input *kinesis.GetShardIteratorInput) (*kinesis.GetShardIteratorOutput, error) {
+			return &kinesis.GetShardIteratorOutput{
+				ShardIterator: aws.String("49578481031144599192696750682534686652010819674221576194"),
+			}, nil
+		},
+		getRecordsMock: func(input *kinesis.GetRecordsInput) (*kinesis.GetRecordsOutput, error) {
+			return &kinesis.GetRecordsOutput{
+				NextShardIterator: nil,
+				Records:           concurrencyRecords,
+			}, nil
+		},
+	}
+
+	cp := store.New()
+	c, err := New("myStreamName", WithClient(client), WithRecordProcessingConcurrency(4), WithStore(cp))
+	if err != nil {
+		t.Fatalf("new consumer error: %v", err)
+	}
+
+	processed := []Record{}
+	mu := &sync.Mutex{}
+	fn := func(r *Record) error {
+		mu.Lock()
+		processed = append(processed, *r)
+		mu.Unlock()
+		if *r.SequenceNumber == "4" {
+			return ErrSkipCheckpoint
+		}
+		return nil
+	}
+
+	err = c.ScanShard(context.Background(), "myShard", fn)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	val, err := cp.GetCheckpoint("myStreamName", "myShard")
+	if err != nil || val != "3" {
+		t.Fatalf("expected checkpoint to be 3, got %s", val)
+	}
+}
+
+func TestScanShard_RecordProcessingConcurrencyError(t *testing.T) {
+	var client = &kinesisClientMock{
+		getShardIteratorMock: func(input *kinesis.GetShardIteratorInput) (*kinesis.GetShardIteratorOutput, error) {
+			return &kinesis.GetShardIteratorOutput{
+				ShardIterator: aws.String("49578481031144599192696750682534686652010819674221576194"),
+			}, nil
+		},
+		getRecordsMock: func(input *kinesis.GetRecordsInput) (*kinesis.GetRecordsOutput, error) {
+			return &kinesis.GetRecordsOutput{
+				NextShardIterator: nil,
+				Records:           concurrencyRecords,
+			}, nil
+		},
+	}
+
+	cp := store.New()
+	c, err := New("myStreamName", WithClient(client), WithRecordProcessingConcurrency(4), WithStore(cp))
+	if err != nil {
+		t.Fatalf("new consumer error: %v", err)
+	}
+
+	processed := []Record{}
+	mu := &sync.Mutex{}
+	fn := func(r *Record) error {
+		mu.Lock()
+		processed = append(processed, *r)
+		mu.Unlock()
+		if *r.SequenceNumber == "2" {
+			return errors.New("Error whilst processing")
+		}
+		return nil
+	}
+
+	err = c.ScanShard(context.Background(), "myShard", fn)
+	if err == nil || err.Error() != "Error whilst processing" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	val, err := cp.GetCheckpoint("myStreamName", "myShard")
+	if err != nil || val != "" {
+		t.Fatalf("expected checkpoint to be empty, got %s", val)
 	}
 }
 

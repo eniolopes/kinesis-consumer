@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"math/big"
-	"sort"
 	"sync"
 	"time"
 
@@ -25,11 +24,6 @@ type Record struct {
 	*kinesis.Record
 	ShardID            string
 	MillisBehindLatest *int64
-}
-
-type RecordProcessingError struct {
-	Err            error
-	SequenceNumber string
 }
 
 // New creates a kinesis consumer with default settings. Use Option to override
@@ -201,75 +195,16 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 			} else {
 				records = resp.Records
 			}
-			var wg sync.WaitGroup
-			done := make(chan int, c.recordProcessingConcurrency)
-			processingError := make(chan RecordProcessingError)
-			var successSequenceNumbers []big.Int
-			for _, r := range records {
-				select {
-				case <-ctx.Done():
-					return nil
-				case recordProcessingError := <-processingError:
-					wg.Wait()
-					if err := c.group.SetCheckpoint(c.streamName, shardID, recordProcessingError.SequenceNumber); err != nil {
-						return err
-					}
-					return recordProcessingError.Err
-				default:
-					wg.Add(1)
-					done <- 1
-					go func(r kinesis.Record, sharID string) {
-						defer func() {
-							wg.Done()
-							<-done
-						}()
-						err := fn(&Record{&r, shardID, resp.MillisBehindLatest})
-						if err != nil && err != ErrSkipCheckpoint {
-							processingError <- RecordProcessingError{Err: err, SequenceNumber: *r.SequenceNumber}
-							return
-						}
 
-						if err != ErrSkipCheckpoint {
-							n := new(big.Int)
-							n, ok := n.SetString(*r.SequenceNumber, 10)
-							if !ok {
-								processingError <- RecordProcessingError{
-									Err:            errors.New(fmt.Sprintf("Failed to parse sequence number to bigint %s", *r.SequenceNumber)),
-									SequenceNumber: *r.SequenceNumber,
-								}
-								return
-							}
-							successSequenceNumbers = append(successSequenceNumbers, *n)
-						}
-						c.counter.Add("records", 1)
-					}(*r, shardID)
-				}
-			}
-			select {
-			case recordProcessingError := <-processingError:
-				if err := c.group.SetCheckpoint(c.streamName, shardID, recordProcessingError.SequenceNumber); err != nil {
-					return err
-				}
-				return recordProcessingError.Err
-			default:
-				wg.Wait()
+			err = c.processRecords(fn, records, resp.MillisBehindLatest, ctx, shardID)
+			if err != nil {
+				return err
 			}
 
-			if len(successSequenceNumbers) > 0 {
-				sort.SliceStable(successSequenceNumbers, func(i, j int) bool {
-					return successSequenceNumbers[i].Cmp(&successSequenceNumbers[j]) == 1
-				})
-				lastSeqNum = successSequenceNumbers[len(successSequenceNumbers)-1].String()
-				if err := c.group.SetCheckpoint(c.streamName, shardID, lastSeqNum); err != nil {
-					return err
-				}
-				successSequenceNumbers = []big.Int{}
-			}
 			if isShardClosed(resp.NextShardIterator, shardIterator) {
 				c.logger.Log("[CONSUMER] shard closed:", shardID)
 				return nil
 			}
-
 			shardIterator = resp.NextShardIterator
 		}
 
@@ -281,6 +216,86 @@ func (c *Consumer) ScanShard(ctx context.Context, shardID string, fn ScanFunc) e
 			continue
 		}
 	}
+}
+
+func (c *Consumer) processRecords(fn ScanFunc, records []*kinesis.Record, millisBehind *int64, ctx context.Context, shardID string) error {
+	errc := make(chan error)
+	recordc := make(chan *kinesis.Record, c.recordProcessingConcurrency)
+	successSeqNumc := make(chan *big.Int)
+	var wg sync.WaitGroup
+
+	for i := 0; i < int(c.recordProcessingConcurrency); i++ {
+		go func(i int) {
+			for {
+				r := <-recordc
+				if r == nil {
+					return
+				}
+				err := fn(&Record{Record: r, ShardID: shardID, MillisBehindLatest: millisBehind})
+				if err != nil && err != ErrSkipCheckpoint {
+					errc <- err
+					return
+				}
+				if err != ErrSkipCheckpoint {
+					n := new(big.Int)
+					n, ok := n.SetString(*r.SequenceNumber, 10)
+					if !ok {
+						errc <- errors.New(fmt.Sprintf("Failed to parse sequence number to bigint %s", *r.SequenceNumber))
+						return
+					}
+					successSeqNumc <- n
+					c.counter.Add("records", 1)
+				}
+				wg.Done()
+			}
+		}(i)
+	}
+
+	var lastSuccessSeqNum big.Int
+	done := make(chan int)
+	go func() {
+		for {
+			seqNum := <-successSeqNumc
+			if seqNum == nil {
+				done <- 1
+				return
+			}
+			if seqNum.Cmp(&lastSuccessSeqNum) == 1 {
+				lastSuccessSeqNum = *seqNum
+			}
+		}
+	}()
+
+	go func() {
+		for _, r := range records {
+			select {
+			case <-ctx.Done():
+				errc <- nil
+				return
+			default:
+				wg.Add(1)
+				recordc <- r
+			}
+		}
+		wg.Wait()
+		close(successSeqNumc)
+		<-done
+		select {
+		case <-ctx.Done():
+			errc <- nil
+			return
+		default:
+			err := c.group.SetCheckpoint(c.streamName, shardID, lastSuccessSeqNum.String())
+			if err != nil {
+				errc <- err
+				return
+			}
+			errc <- nil
+			return
+		}
+	}()
+
+	return <-errc
 }
 
 var retriableErrors = map[string]struct{}{
